@@ -3,6 +3,7 @@
 // .cat  every byte XOR (0xDB + i) & 0xFF; first line is a .dat name (unused by the game), then "path size" lines.
 // .dat  members back to back in index order, every byte XOR 0x33; offsets are the running sum of sizes.
 // .pck  gzip; or a key byte k ^ 0xC8 followed by the gzip stream XOR k. Shown as an archive with one file.
+//       .pbd (a text model .bod) and .pbb (a binary model .bob) are the same format.
 #include <windows.h>
 
 #include <algorithm>
@@ -405,10 +406,18 @@ bool looks_like_pck(const uint8_t* b, size_t n) {
     return (b[1] ^ k) == 0x1F && (b[2] ^ k) == 0x8B && (b[3] ^ k) == 8;
 }
 
-// Name of the single member: the .pck's base name with an extension guessed from its folder, else from the text.
+// .pck, .pbd, .pbb: gzip-packed files of the game
+bool packed_ext(const wstr& path) {
+    return ends_with_i(path, L".pck") || ends_with_i(path, L".pbd") || ends_with_i(path, L".pbb");
+}
+
+// Name of the single member: the base name with .bod for .pbd, .bob for .pbb; for .pck an extension guessed from
+// its folder, else from the text.
 wstr pck_member_name(const wstr& pckPath, const std::vector<uint8_t>& data) {
     wstr folder = lower_w(base_name(dir_name(pckPath)));
     wstr stem = base_name(strip_ext(pckPath));
+    if (ends_with_i(pckPath, L".pbd")) return stem + L".bod";
+    if (ends_with_i(pckPath, L".pbb")) return stem + L".bob";
     if (folder == L"scripts" || folder == L"t" || folder == L"director" || folder == L"maps") return stem + L".xml";
     if (folder == L"types") return stem + L".txt";
     size_t i = 0;
@@ -433,7 +442,7 @@ Kind sniff(const wstr& path) {
 }
 
 Kind kind_for_write(const wstr& path) {
-    if (ends_with_i(path, L".pck")) return kPck;
+    if (packed_ext(path)) return kPck;
     if (ends_with_i(path, L".cat")) return kCat;
     Kind k = exists(path) ? sniff(path) : kNone;
     return k == kNone ? kCat : k;
@@ -460,7 +469,7 @@ Archive* open_arc(const wstr& path, int& result) {
     result = read_all(path, raw);
     if (result) return nullptr;
     if (file_time(path, a->ft)) a->dosTime = dos_time(a->ft);
-    if (looks_like_pck(raw.data(), raw.size()) || ends_with_i(path, L".pck")) {
+    if (looks_like_pck(raw.data(), raw.size()) || packed_ext(path)) {
         if (!decode_pck(raw, a->pck)) {
             result = E_BAD_ARCHIVE;
             return nullptr;
@@ -822,7 +831,7 @@ int pck_flags(const wstr& path) {
 bool can_handle(const wstr& path) {
     Kind k = sniff(path);
     if (k == kCat) return exists(dat_of(path));
-    return k == kPck && (ends_with_i(path, L".pck") || pck_flags(path) == 0);
+    return k == kPck && (packed_ext(path) || pck_flags(path) == 0);
 }
 
 wstr dest_path(const wstr& destPath, const wstr& destName) {

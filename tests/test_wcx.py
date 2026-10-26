@@ -298,6 +298,52 @@ def test_pck_write(d, game, tmp, unpck, quick):
     check(p.returncode == E_NOT_SUPPORTED, d.arch + ' pck delete refused')
 
 
+def test_models(d, game, tmp, unpck, catx):
+    """.pbd/.pbb (gzip-packed .bod/.bob models): member named .bod/.bob, contents as unpck reads them, repack."""
+    found = {'pbd': [], 'pbb': []}
+    for cat in sorted(glob.glob(os.path.join(game, 'addon', '[0-9][0-9].cat'))) + sorted(glob.glob(os.path.join(game, '[0-9][0-9].cat'))):
+        for p, _, size in catx.read_index(cat):
+            ext = p.lower().rsplit('.', 1)[-1]
+            if ext in found and len(found[ext]) < 3:
+                found[ext].append((cat, p))
+        if all(len(v) == 3 for v in found.values()):
+            break
+    check(found['pbd'] and found['pbb'], d.arch + ' models found in catalogs')
+    work = os.path.join(tmp, 'models_' + d.arch)
+    os.makedirs(work, exist_ok=True)
+    for ext, member_ext in (('pbd', '.bod'), ('pbb', '.bob')):
+        for cat, p in found[ext]:
+            raw = catx.read_member(cat, p)
+            arc = os.path.join(work, os.path.basename(p))
+            open(arc, 'wb').write(raw)
+            data = unpck.unpack(raw)
+            stem = os.path.splitext(os.path.basename(p))[0]
+            what = '%s %s' % (d.arch, p)
+            check(d.run('canhandle', arc).stdout.decode().strip() == '1 1', what + ' canhandle')
+            check(d.list(arc) == [(stem + member_ext, len(raw), len(data))], what + ' list %s' % d.list(arc))
+            check(d.hashes(arc, tmp) == [(stem + member_ext, hashlib.md5(data).hexdigest())], what + ' contents')
+            # F4-style edit: extract, change, pack back under the member's name
+            ex = os.path.join(work, 'x')
+            os.makedirs(ex, exist_ok=True)
+            d.run('extract', arc, ex)
+            edited = data + (b'\n// edited\n' if ext == 'pbd' else b'\x00edited')
+            open(os.path.join(ex, stem + member_ext), 'wb').write(edited)
+            d.run('pack', arc, ex, '-', 2, stem + member_ext)
+            new = open(arc, 'rb').read()
+            check(new[:2] == b'\x1f\x8b' and unpck.unpack(new) == edited, what + ' repack')
+            os.remove(os.path.join(ex, stem + member_ext))
+    # a new model archive from a .bod
+    src = os.path.join(work, 'src')
+    os.makedirs(src, exist_ok=True)
+    open(os.path.join(src, 'new model.bod'), 'wb').write(b'// new\n1;2;3;\n')
+    arc = os.path.join(work, 'new model.pbd')
+    if os.path.exists(arc):
+        os.remove(arc)
+    d.run('pack', arc, src, '-', 2, 'new model.bod')
+    check(gzip.decompress(open(arc, 'rb').read()) == b'// new\n1;2;3;\n' and d.list(arc)[0][0] == 'new model.bod',
+          d.arch + ' new .pbd')
+
+
 def test_catalog_write(d, game, tmp, catx):
     src_cats = [c for c in (os.path.join(game, 'addon', '04.cat'), os.path.join(game, '03.cat')) if os.path.exists(c)]
     files = os.path.join(tmp, 'files')
@@ -447,7 +493,9 @@ def make_synthetic_game(root, catx):
         m += [('t/%04d-L044.pck' % (i + n), gzip.compress(xml(i + n))) for i in range(3)]
         m += [('types/TShips.pck', gzip.compress(b'22;0;\n' * 500)), ('maps/x3_universe.pck', gzip.compress(xml(99)))]
         m += [('director/2.024 Terran Plot.pck', gzip.compress(xml(98))), ('L/x3story.obj', blob(30000)),
-              ('objects/cut/00749 big model.pbd', blob(200000)), ('textures/empty.txt', b''),
+              ('objects/cut/00749 big model.pbd', gzip.compress(b'/=====\n// x3wcx test model\n' + b'1; 2; 3; -1; // point\n' * 3000)),
+              ('objects/cut/00948.pbb', gzip.compress(b'CUT1INFO$' + blob(60000))),
+              ('objects/ships/raw.bin', blob(200000)), ('textures/empty.txt', b''),
               ('Documents/readme.css', b'body {}\n' * 20)]
         rnd.shuffle(m)
         return m
@@ -494,6 +542,7 @@ def main():
             test_read_catalogs(d, a.game, tmp, catx, a.quick)
             test_pck_read(d, a.game, tmp, unpck, catx)
             test_pck_write(d, a.game, tmp, unpck, a.quick)
+            test_models(d, a.game, tmp, unpck, catx)
             test_catalog_write(d, a.game, tmp, catx)
             print('%s done in %.0fs' % (arch, time.time() - t0))
     finally:

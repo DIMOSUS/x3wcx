@@ -8,7 +8,8 @@ A packer plugin (WCX) for Total Commander. It opens these as ordinary archives:
 
 - **X3 catalogs** (X2, X3: Reunion, Terran Conflict, Albion Prelude): an index `NN.cat` and its paired data file
   `NN.dat`;
-- **`.pck` files** (gzip-compressed XML and TXT): an archive with one file inside.
+- **`.pck` files** (gzip-compressed XML and TXT): an archive with one file inside;
+- **`.pbd` and `.pbb` models**, packed the same way: inside is the text model `.bod` or the binary model `.bob`.
 
 You can view (F3), unpack (F5), edit (F4), add, replace and delete files right in TC. No external libraries are
 needed: deflate/inflate are built in (`src/flate.cpp`).
@@ -23,7 +24,8 @@ needed: deflate/inflate are built in (`src/flate.cpp`).
    (`pluginst.inf`) and binds it to `cat`.
 2. **Configuration → Options → Plugins → Packer plugins (WCX) → Configure**:
    - type `cat` as the extension, press "New type" and pick `x3wcx.wcx` (64-bit TC takes the `.wcx64` next to it);
-   - repeat for `pck`.
+   - repeat for `pck`, and for `pbd` and `pbb` if you want to open models with Enter (otherwise Ctrl+PgDn opens
+     them too).
 3. If the extension is already taken by another plugin, TC asks which one to use. Do not bind `.dat`.
 
 An archive with another extension opens with Ctrl+PgDn. The plugin recognizes a catalog by the first index line
@@ -32,7 +34,7 @@ when its gzip header stores no file name, as in the game's files, so ordinary `.
 
 ## Features
 
-| | `.cat` + `.dat` | `.pck` |
+| | `.cat` + `.dat` | `.pck`, `.pbd`, `.pbb` |
 |---|---|---|
 | List, F3, F5, test | yes | yes, one file |
 | New archive (Alt+F5) | yes, `NN.cat` + `NN.dat` | yes, unmasked, like the game's `addon\scripts` |
@@ -45,6 +47,8 @@ when its gzip header stores no file name, as in the game's files, so ordinary `.
   outside latin1 is refused (`E_BAD_DATA`).
 - **The first index line** (a `.dat` name the game does not use) is kept as it was when a catalog is changed. In a new
   catalog it names the paired `.dat`. A new catalog is byte-identical to what `x3kc cat --pack` writes.
+- **The file inside a `.pbd` is a `.bod`, inside a `.pbb` a `.bob`** (the archive's base name with that
+  extension). A `.bod` is text and can be edited with F4; a `.bob` is binary and needs a model tool.
 - **The extension of the file inside a `.pck`** comes from its folder: `scripts`, `t`, `director`, `maps` → `.xml`,
   `types` → `.txt`. In any other folder it comes from the content: `.xml` if the text starts with `<`, else `.txt`.
   This matters for a `.pck` opened from inside a catalog: TC unpacks it to a temp folder, and the original folder name
@@ -99,7 +103,8 @@ This needs a manual check (see below). **Until then, assume that edits inside a 
 - Catalogs store no empty folders: folders come only from file paths.
 - A `.pck` is unpacked whole in memory (the game's files are a few MB at most).
 - Background operation (`GetBackgroundFlags`) is not declared: TC runs operations in its main thread.
-- `.pbd`/`.pbb` (compressed models) show as plain files and are not unpacked.
+- Inside a catalog a `.pbd`/`.pbb` is a plain file; Enter on it opens it as a nested archive (see above), so an
+  edited model has to be copied back into the catalog by hand.
 
 ## Build and tests
 
