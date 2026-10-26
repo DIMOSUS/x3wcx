@@ -1,0 +1,6 @@
+[plugininstall]
+description=X3 catalogs (.cat + .dat) and .pck files
+type=wcx
+file=x3wcx.wcx
+defaultdir=x3wcx
+defaultextension=cat
