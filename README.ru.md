@@ -1,5 +1,7 @@
 # x3wcx — каталоги X3 и файлы .pck в Total Commander
 
+[![build](https://github.com/DIMOSUS/x3wcx/actions/workflows/build.yml/badge.svg)](https://github.com/DIMOSUS/x3wcx/actions/workflows/build.yml)
+
 [English](README.md)
 
 Плагин-упаковщик (WCX) для Total Commander. Открывает как обычные архивы:
@@ -9,6 +11,9 @@
 
 Файлы можно смотреть (F3), распаковывать (F5), править (F4), добавлять, заменять и удалять прямо в TC. Внешние
 библиотеки не нужны: deflate/inflate встроены (`src/flate.cpp`).
+
+**Скачать:** `x3wcx.zip` на странице [Releases](https://github.com/DIMOSUS/x3wcx/releases) (обе сборки и
+`pluginst.inf`).
 
 ## Установка
 
@@ -108,10 +113,18 @@ build.cmd
 Тесты сравнивают плагин с эталоном на Python — `catx.py` и `unpck.py` из [x3kc](https://github.com/DIMOSUS/x3kc):
 
 ```
-python tests\test_wcx.py --game "D:\GAMES\X3 Terran Conflict" --x3kc D:\GAMES\x3kc [--quick]
+git clone https://github.com/DIMOSUS/x3kc ..\x3kc
+python tests\test_wcx.py --x3kc ..\x3kc                                  # синтетические каталоги, несколько секунд
+python tests\test_wcx.py --x3kc ..\x3kc --game "C:\Games\X3 Terran Conflict" [--quick]   # настоящие
 ```
 
+- Без `--game` тесты собирают маленькие синтетические каталоги и `.pck`, устроенные как у игры; это же
+  запускает CI. С `--game` берётся папка игры (её и x3kc можно задать переменными `X3_GAME` и `X3KC`).
 - Каталоги игры только читаются: проверяется список и содержимое всех файлов во всех каталогах.
 - Изменения делаются на копиях во временной папке и сравниваются побайтно с `catx.write_catalog`.
 - `.pck` проходят круг распаковка → упаковка → распаковка; результат проверяет и `gzip` из Python.
 - `--quick` пропускает два больших каталога (01, 02).
+
+## Лицензия
+
+MIT, см. [LICENSE](LICENSE). X3 — торговая марка Egosoft; проект с Egosoft не связан и файлов игры не содержит.

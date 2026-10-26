@@ -2,10 +2,12 @@
 
 Both builds are driven through build/wcxdrv32.exe (x3wcx.wcx) and build/wcxdrv64.exe (x3wcx.wcx64), which call the
 exports the way Total Commander does. Game catalogs are only read (list, extract); every change is made on copies in
-a temporary folder.
+a temporary folder. Without --game the tests run on small synthetic catalogs made with catx.write_catalog.
 
-    python tests/test_wcx.py [--game DIR] [--x3kc DIR] [--quick] [--keep]
-        --quick   skip the two big catalogs (01.cat 1.3 GB, 02.cat 2.1 GB) and pack only part of the .pck files
+    python tests/test_wcx.py [--game DIR] [--x3kc DIR] [--quick] [--keep] [--arch x86|x64]
+        --game    X3 TC/AP folder (env X3_GAME); omitted: synthetic data
+        --x3kc    checkout of https://github.com/DIMOSUS/x3kc (env X3KC), unless the package is installed
+        --quick   skip catalogs whose .dat is over 500 MB (the game's 01 and 02) and pack only part of the .pck files
 """
 import argparse
 import glob
@@ -421,19 +423,68 @@ def test_catalog_write(d, game, tmp, catx):
     check(p.returncode != 0 and open(lone, 'rb').read() == b'not ours', d.arch + ' lone .dat is not overwritten')
 
 
+def make_synthetic_game(root, catx):
+    """A small stand-in for the game folder, laid out like X3 TC/AP: catalogs with .pck members in the folders the
+    plugin knows (and in others), paths with spaces, first lines that do not name their .dat, addon/scripts/*.pck."""
+    rnd = random.Random(42)
+
+    def xml(i):
+        return ('<?xml version="1.0" encoding="UTF-8"?>\n<script><name>s%d</name>%s</script>\n'
+                % (i, ''.join('<line>%d</line>' % rnd.getrandbits(rnd.randint(1, 30)) for _ in range(rnd.randint(10, 400))))).encode()
+
+    def blob(n):
+        return bytes(rnd.getrandbits(8) for _ in range(n))
+
+    def write_cat(cat, members, first=None):
+        catx.write_catalog(cat, members)
+        if first:  # stock catalogs say e.g. foo.dat
+            lines = [first] + ['%s %d' % (p, len(b)) for p, b in members]
+            idx = ('\n'.join(lines) + '\n').encode('latin1')
+            open(cat, 'wb').write(bytes((c ^ ((0xDB + i) & 0xFF)) for i, c in enumerate(idx)))
+
+    def catalog(n):
+        m = [('scripts/!lib.s%d.pck' % i, gzip.compress(xml(i))) for i in range(n)]
+        m += [('t/%04d-L044.pck' % (i + n), gzip.compress(xml(i + n))) for i in range(3)]
+        m += [('types/TShips.pck', gzip.compress(b'22;0;\n' * 500)), ('maps/x3_universe.pck', gzip.compress(xml(99)))]
+        m += [('director/2.024 Terran Plot.pck', gzip.compress(xml(98))), ('L/x3story.obj', blob(30000)),
+              ('objects/cut/00749 big model.pbd', blob(200000)), ('textures/empty.txt', b''),
+              ('Documents/readme.css', b'body {}\n' * 20)]
+        rnd.shuffle(m)
+        return m
+
+    write_cat(os.path.join(root, '01.cat'), catalog(40))
+    write_cat(os.path.join(root, '03.cat'), catalog(25))
+    write_cat(os.path.join(root, '13.cat'), catalog(5), first='foo.dat')
+    os.makedirs(os.path.join(root, 'addon', 'scripts'))
+    write_cat(os.path.join(root, 'addon', '01.cat'), catalog(30))
+    write_cat(os.path.join(root, 'addon', '04.cat'), catalog(10), first='foo.dat')
+    for i in range(60):
+        open(os.path.join(root, 'addon', 'scripts', 'plugin.test.%02d.pck' % i), 'wb').write(gzip.compress(xml(1000 + i)))
+
+
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument('--game', default=r'D:\GAMES\X3 Terran Conflict')
-    ap.add_argument('--x3kc', default=r'D:\GAMES\x3kc')
+    ap.add_argument('--game', default=os.environ.get('X3_GAME'),
+                    help='X3 TC/AP folder (only read); without it a small synthetic one is made (env X3_GAME)')
+    ap.add_argument('--x3kc', default=os.environ.get('X3KC'),
+                    help='checkout of https://github.com/DIMOSUS/x3kc, unless the package is installed (env X3KC)')
     ap.add_argument('--quick', action='store_true')
     ap.add_argument('--keep', action='store_true')
     ap.add_argument('--arch', choices=['x86', 'x64'])
     a = ap.parse_args()
-    sys.path.insert(0, a.x3kc)
-    from x3kc import catx, unpck
+    if a.x3kc:
+        sys.path.insert(0, a.x3kc)
+    try:
+        from x3kc import catx, unpck
+    except ImportError:
+        sys.exit('x3kc not found: pass --x3kc <checkout of https://github.com/DIMOSUS/x3kc> or pip install it')
     tmp = tempfile.mkdtemp(prefix='x3wcx-test-')
     print('temp', tmp)
     try:
+        if not a.game:
+            a.game = os.path.join(tmp, 'game')
+            make_synthetic_game(a.game, catx)
+            print('no --game: using synthetic catalogs')
         for arch, exe, dll in DRIVERS:
             if a.arch and arch != a.arch:
                 continue

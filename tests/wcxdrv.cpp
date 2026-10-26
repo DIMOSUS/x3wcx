@@ -110,7 +110,11 @@ static HANDLE open_w(const std::wstring& arc, int mode, int& res) {
     return h;
 }
 
-// Walks the archive; for each member calls visit(name, header) which returns the ProcessFileW operation and destination.
+// Passed to visit() as the destination once a member has been extracted ('<' cannot occur in a path).
+static const wchar_t kDone[] = L"<done>";
+
+// Walks the archive; for each member calls visit(header, dest) which returns the ProcessFileW operation and sets the
+// destination; after an extraction it is called again with dest == kDone.
 template <class V>
 static int walk(const std::wstring& arc, int mode, V visit) {
     int res;
@@ -125,7 +129,7 @@ static int walk(const std::wstring& arc, int mode, V visit) {
         int op = visit(hd, dest);
         r = pf(h, op, nullptr, dest.empty() ? nullptr : &dest[0]);
         if (r) break;
-        if (op == PK_EXTRACT) visit(hd, dest = L"\x01done");
+        if (op == PK_EXTRACT) visit(hd, dest = kDone);
     }
     fn<CloseArchive_t>("CloseArchive")(h);
     return r == E_END_ARCHIVE ? 0 : r;
@@ -192,7 +196,7 @@ int wmain(int argc, wchar_t** argv) {
     } else if (cmd == L"hashes") {
         std::wstring tmp = std::wstring(argv[a + 1]) + L"\\member.bin";
         r = walk(argv[a], PK_OM_EXTRACT, [&](tHeaderDataExW& hd, std::wstring& dest) {
-            if (dest == L"\x01done") {
+            if (dest == kDone) {
                 std::wstring hex;
                 if (!md5_file(tmp, hex)) hex = L"?";
                 out_utf8(hex + L"\t" + hd.FileName + L"\n");
@@ -205,7 +209,7 @@ int wmain(int argc, wchar_t** argv) {
     } else if (cmd == L"extract") {
         std::wstring out = argv[a + 1];
         r = walk(argv[a], PK_OM_EXTRACT, [&](tHeaderDataExW& hd, std::wstring& dest) {
-            if (dest == L"\x01done") return 0;
+            if (dest == kDone) return 0;
             dest = out + L"\\" + hd.FileName;
             return PK_EXTRACT;
         });
