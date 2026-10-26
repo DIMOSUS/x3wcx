@@ -18,3 +18,5 @@ EXPORTS
     DeleteFilesW
     CanYouHandleThisFile
     CanYouHandleThisFileW
+    PackSetDefaultParams
+    ConfigurePacker

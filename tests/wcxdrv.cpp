@@ -1,6 +1,6 @@
 // Test driver: loads a WCX plugin and calls its exports the way Total Commander does.
 //
-//   wcxdrv <dll> [--abort-after N] <command> ...
+//   wcxdrv <dll> [--abort-after N] [--ini FILE] <command> ...
 //     caps                                  GetPackerCaps
 //     canhandle <file>                      CanYouHandleThisFileW (and the ANSI one): prints 1/0
 //     list <arc>                            name<TAB>packed<TAB>unpacked<TAB>attr, via OpenArchiveW/ReadHeaderExW
@@ -149,7 +149,7 @@ static std::vector<wchar_t> make_list(int argc, wchar_t** argv, int from) {
 
 int wmain(int argc, wchar_t** argv) {
     if (argc < 3) {
-        fprintf(stderr, "usage: wcxdrv <dll> [--abort-after N] <command> ...\n");
+        fprintf(stderr, "usage: wcxdrv <dll> [--abort-after N] [--ini FILE] <command> ...\n");
         return 2;
     }
     gDll = LoadLibraryW(argv[1]);
@@ -158,8 +158,20 @@ int wmain(int argc, wchar_t** argv) {
         return 101;
     }
     int a = 2;
-    if (std::wstring(argv[a]) == L"--abort-after") {
-        gAbortAfter = _wtoi64(argv[a + 1]);
+    for (;;) {
+        std::wstring opt = argv[a];
+        if (opt == L"--abort-after") {
+            gAbortAfter = _wtoi64(argv[a + 1]);
+        } else if (opt == L"--ini") {  // as TC does once after loading: the plugin's settings file
+            PackDefaultParamStruct dps = {};
+            dps.size = sizeof dps;
+            dps.PluginInterfaceVersionLow = 22;
+            dps.PluginInterfaceVersionHi = 2;
+            strncpy(dps.DefaultIniName, to_acp(argv[a + 1]).c_str(), MAX_PATH - 1);
+            fn<void(__stdcall*)(PackDefaultParamStruct*)>("PackSetDefaultParams")(&dps);
+        } else {
+            break;
+        }
         a += 2;
     }
     std::wstring cmd = argv[a++];

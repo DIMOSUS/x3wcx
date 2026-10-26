@@ -28,6 +28,16 @@ const wchar_t kBakSuffix[] = L".x3wcx-bak";
 tProcessDataProc gProcA = nullptr;
 tProcessDataProcW gProcW = nullptr;
 
+// Settings live in the ini TC names in PackSetDefaultParams, section [x3wcx].
+std::string gIni;
+const char kIniSection[] = "x3wcx";
+const char kPackOnAdd[] = "PackOnAdd";
+
+// Files added to a catalog go in packed when the game looks them up packed first (default on).
+bool pack_on_add() {
+    return gIni.empty() || GetPrivateProfileIntA(kIniSection, kPackOnAdd, 1, gIni.c_str()) != 0;
+}
+
 // ---------------------------------------------------------------- strings
 
 wstr acp_to_w(const char* s) {
@@ -406,6 +416,18 @@ bool looks_like_pck(const uint8_t* b, size_t n) {
     return (b[1] ^ k) == 0x1F && (b[2] ^ k) == 0x8B && (b[3] ^ k) == 8;
 }
 
+// The packed extension the game tries first for a file of this type, or null. The exe's lookup lists are
+// "pck xml", "pck txt", "pck dds" and "pbb bob pbd bod": within one catalog the packed form wins.
+const char* packed_form(const std::string& path) {
+    size_t dot = path.rfind('.'), slash = path.rfind('/');
+    if (dot == std::string::npos || (slash != std::string::npos && dot < slash)) return nullptr;
+    std::string ext = norm(path.substr(dot));
+    if (ext == ".xml" || ext == ".txt" || ext == ".dds") return ".pck";
+    if (ext == ".bod") return ".pbd";
+    if (ext == ".bob") return ".pbb";
+    return nullptr;
+}
+
 // .pck, .pbd, .pbb: gzip-packed files of the game
 bool packed_ext(const wstr& path) {
     return ends_with_i(path, L".pck") || ends_with_i(path, L".pbd") || ends_with_i(path, L".pbb");
@@ -559,7 +581,8 @@ int extract(Archive* a, int op, const wstr& dest) {
 struct Item {
     std::string path;
     uint64_t oldOff = 0, oldSize = 0;
-    wstr src;  // empty: take from the old .dat
+    wstr src;           // empty: take from the old .dat
+    bool pack = false;  // gzip src first (stored as .pck/.pbd/.pbb)
 };
 
 // Streams items to out, filling sizes; old members are copied raw (the XOR key does not depend on position).
@@ -570,6 +593,15 @@ int write_items(HANDLE oldDat, HANDLE out, const std::vector<Item>& items, const
         if (it.src.empty()) {
             size = it.oldSize;
             r = seek(oldDat, it.oldOff) ? copy_stream(oldDat, out, size, false, arcName) : E_EREAD;
+        } else if (it.pack) {
+            std::vector<uint8_t> data;
+            r = read_all(it.src, data);
+            if (r) return r;
+            std::vector<uint8_t> gz = encode_pck(data, false, 0);  // unmasked, as the game's own
+            for (uint8_t& x : gz) x ^= kDatKey;
+            size = gz.size();
+            if (!write_exact(out, gz.data(), gz.size())) return E_EWRITE;
+            if (!progress(it.src, data.size())) return E_EABORTED;
         } else {
             File in(open_read(it.src));
             if (!in.ok()) return E_EOPEN;
@@ -717,6 +749,18 @@ int pack_cat(const wstr& cat, const std::vector<Source>& srcs) {
     std::vector<std::string> paths(srcs.size());  // catalog paths are latin1
     for (size_t i = 0; i < srcs.size(); i++)
         if (!w_to_latin1(srcs[i].path, paths[i])) return E_BAD_DATA;
+    // types the game looks up packed first go in packed, unless this catalog already holds that very file unpacked
+    std::vector<bool> packIt(srcs.size(), false);
+    if (pack_on_add()) {
+        for (size_t i = 0; i < srcs.size(); i++) {
+            const char* to = packed_form(paths[i]);
+            if (!to) continue;
+            std::string n = norm(paths[i]);
+            if (std::any_of(old.ents.begin(), old.ents.end(), [&](const Entry& e) { return norm(e.path) == n; })) continue;
+            paths[i] = paths[i].substr(0, paths[i].rfind('.')) + to;
+            packIt[i] = true;
+        }
+    }
     // the last of equal paths wins; a path already in the catalog is replaced in its place
     std::vector<int> replaceBy(old.ents.size(), -1);
     std::vector<bool> isNew(srcs.size(), true);
@@ -734,12 +778,12 @@ int pack_cat(const wstr& cat, const std::vector<Source>& srcs) {
     bool replacing = std::any_of(replaceBy.begin(), replaceBy.end(), [](int x) { return x >= 0; });
     std::vector<Item> added;
     for (size_t i = 0; i < srcs.size(); i++)
-        if (isNew[i]) added.push_back({paths[i], 0, 0, srcs[i].src});
+        if (isNew[i]) added.push_back({paths[i], 0, 0, srcs[i].src, packIt[i]});
     if (!replacing) return added.empty() ? 0 : append_cat(cat, old, added);
     std::vector<Item> items;
     for (size_t k = 0; k < old.ents.size(); k++) {
         const Entry& e = old.ents[k];
-        if (replaceBy[k] >= 0) items.push_back({e.path, 0, 0, srcs[replaceBy[k]].src});
+        if (replaceBy[k] >= 0) items.push_back({e.path, 0, 0, srcs[replaceBy[k]].src, packIt[replaceBy[k]]});
         else items.push_back({e.path, e.off, e.size, wstr()});
     }
     items.insert(items.end(), added.begin(), added.end());
@@ -949,7 +993,34 @@ void __stdcall SetProcessDataProcW(HANDLE, tProcessDataProcW p) {
 }
 
 int __stdcall GetPackerCaps() {
-    return PK_CAPS_NEW | PK_CAPS_MODIFY | PK_CAPS_MULTIPLE | PK_CAPS_DELETE | PK_CAPS_BY_CONTENT | PK_CAPS_SEARCHTEXT;
+    return PK_CAPS_NEW | PK_CAPS_MODIFY | PK_CAPS_MULTIPLE | PK_CAPS_DELETE | PK_CAPS_OPTIONS | PK_CAPS_BY_CONTENT |
+           PK_CAPS_SEARCHTEXT;
+}
+
+void __stdcall PackSetDefaultParams(PackDefaultParamStruct* dps) {
+    if (dps && dps->size >= (int)sizeof(PackDefaultParamStruct)) gIni = dps->DefaultIniName;
+}
+
+// The "Configure" button in TC's packer dialog: one Yes/No question.
+void __stdcall ConfigurePacker(HWND parent, HINSTANCE) {
+    bool ru = PRIMARYLANGID(GetUserDefaultUILanguage()) == LANG_RUSSIAN;
+    const wchar_t* text =
+        ru ? L"Сжимать файлы при добавлении в каталог (.cat)?\n\n"
+             L".xml, .txt, .dds → .pck,  .bod → .pbd,  .bob → .pbb\n\n"
+             L"Игра ищет эти файлы сначала в сжатом виде. Файл, который уже лежит в каталоге несжатым, "
+             L"заменяется как есть.\n\nСейчас: "
+           : L"Pack files when adding them to a catalog (.cat)?\n\n"
+             L".xml, .txt, .dds → .pck,  .bod → .pbd,  .bob → .pbb\n\n"
+             L"The game looks these up packed first. A file the catalog already holds unpacked is replaced as it is."
+             L"\n\nNow: ";
+    wstr msg = wstr(text) + (pack_on_add() ? (ru ? L"да" : L"yes") : (ru ? L"нет" : L"no"));
+    int r = MessageBoxW(parent, msg.c_str(), L"x3wcx", MB_YESNOCANCEL | MB_ICONQUESTION);
+    if (r == IDCANCEL) return;
+    if (gIni.empty()) {
+        MessageBoxW(parent, ru ? L"TC не передал файл настроек." : L"TC gave no settings file.", L"x3wcx", MB_ICONWARNING);
+        return;
+    }
+    WritePrivateProfileStringA(kIniSection, kPackOnAdd, r == IDYES ? "1" : "0", gIni.c_str());
 }
 
 int __stdcall PackFilesW(WCHAR* packedFile, WCHAR* subPath, WCHAR* srcPath, WCHAR* addList, int flags) {

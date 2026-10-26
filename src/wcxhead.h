@@ -123,6 +123,13 @@ typedef struct {
     int CmtState;
 } tOpenArchiveDataW;
 
+typedef struct {
+    int size;
+    DWORD PluginInterfaceVersionLow;
+    DWORD PluginInterfaceVersionHi;
+    char DefaultIniName[MAX_PATH];
+} PackDefaultParamStruct;
+
 typedef int(__stdcall* tChangeVolProc)(char* ArcName, int Mode);
 typedef int(__stdcall* tChangeVolProcW)(WCHAR* ArcName, int Mode);
 typedef int(__stdcall* tProcessDataProc)(char* FileName, int Size);

@@ -30,7 +30,7 @@ DRIVERS = [('x86', os.path.join(BUILD, 'wcxdrv32.exe'), os.path.join(BUILD, 'x3w
 XOR33 = bytes(i ^ 0x33 for i in range(256))
 
 E_NOT_SUPPORTED, E_EABORTED, E_TOO_MANY_FILES, E_ECREATE = 24, 21, 23, 16
-CAPS = 1 | 2 | 4 | 8 | 64 | 128
+CAPS = 1 | 2 | 4 | 8 | 16 | 64 | 128
 
 failures = []
 
@@ -43,13 +43,18 @@ def check(cond, what):
 
 
 class Drv:
-    def __init__(self, arch, exe, dll):
-        self.arch, self.exe, self.dll = arch, exe, dll
+    def __init__(self, arch, exe, dll, ini=None):
+        self.arch, self.exe, self.dll, self.ini = arch, exe, dll, ini
+
+    def with_ini(self, ini):
+        return Drv(self.arch, self.exe, self.dll, ini)
 
     def run(self, *args, abort_after=None, ok=(0,)):
         cmd = [self.exe, self.dll]
         if abort_after is not None:
             cmd += ['--abort-after', str(abort_after)]
+        if self.ini:
+            cmd += ['--ini', self.ini]
         cmd += [str(a) for a in args]
         p = subprocess.run(cmd, capture_output=True)
         if ok is not None and p.returncode not in ok:
@@ -366,6 +371,85 @@ def test_models(d, game, tmp, unpck, catx):
           d.arch + ' new .pbd')
 
 
+def write_ini(path, pack_on_add):
+    with open(path, 'w') as f:
+        f.write('[other]\nx=1\n' if pack_on_add is None else '[x3wcx]\nPackOnAdd=%d\n' % pack_on_add)
+    return path
+
+
+def test_pack_on_add(d, game, tmp, catx, unpck):
+    """Adding to a catalog packs the types the game looks up packed first: .xml/.txt/.dds -> .pck, .bod -> .pbd,
+    .bob -> .pbb; other files and files the catalog already holds unpacked go in as they are."""
+    orig = os.path.join(game, 'addon', '04.cat')
+    work = os.path.join(tmp, 'packadd_' + d.arch)
+    if os.path.isdir(work):
+        shutil.rmtree(work)
+    files = os.path.join(work, 'files')
+    os.makedirs(os.path.join(files, 'x'))
+    cat = os.path.join(work, '08.cat')
+    rnd = random.Random(5)
+    src = {'x/a.xml': b'<?xml version="1.0"?>\n<a>' + b'<b/>' * 2000 + b'</a>\n',
+           'x/B.TXT': b'22;0;\n' * 3000,
+           'x/tex.dds': b'DDS |\x00\x00\x00' + bytes(rnd.getrandbits(8) for _ in range(5000)) + bytes(20000),
+           'x/model.bod': b'// model\n' + b'1; 2; 3; -1;\n' * 2000,
+           'x/model2.bob': b'BOB1INFO' + bytes(rnd.getrandbits(8) for _ in range(3000)),
+           'x/data.bin': bytes(rnd.getrandbits(8) for _ in range(4000)),
+           'x/already.pck': gzip.compress(b'<already/>')}
+    for p, b in src.items():
+        open(os.path.join(files, *p.split('/')), 'wb').write(b)
+    packed = {'x/a.xml': 'x/a.pck', 'x/B.TXT': 'x/B.pck', 'x/tex.dds': 'x/tex.pck', 'x/model.bod': 'x/model.pbd',
+              'x/model2.bob': 'x/model2.pbb'}
+
+    def contents():
+        return [(p, catx.read_member(cat, p)) for p, _, _ in catx.read_index(cat)]
+
+    for ini in (None, write_ini(os.path.join(work, 'on.ini'), 1), write_ini(os.path.join(work, 'nokey.ini'), None)):
+        dd = d.with_ini(ini)
+        what = '%s pack on add (%s)' % (d.arch, os.path.basename(ini) if ini else 'no ini')
+        shutil.copyfile(orig, cat)
+        shutil.copyfile(os.path.splitext(orig)[0] + '.dat', os.path.join(work, '08.dat'))
+        before = contents()
+        dd.run('pack', cat, files, '-', 2, *[p.replace('/', '\\') for p in src])
+        got = contents()
+        ok = check(got[:len(before)] == before, what + ': old members untouched')
+        names = [p for p, _ in got[len(before):]]
+        ok &= check(names == [packed.get(p, p) for p in src], what + ': names %s' % names)
+        for (p, b), (q, stored) in zip(src.items(), got[len(before):]):
+            if p in packed:
+                ok &= check(stored[:2] == b'\x1f\x8b' and unpck.unpack(stored) == b, what + ': %s packed as %s' % (p, q))
+            else:
+                ok &= check(stored == b, what + ': %s stored as it is' % p)
+        ok &= check(d.hashes(cat, tmp) == member_md5s(cat, catx), what + ': plugin reads it back')
+        if not ok:
+            return
+
+    # replacing: an .xml replaces the catalog's .pck of that name in its place, packed
+    pcks = [(i, p) for i, (p, _, _) in enumerate(catx.read_index(cat)) if p.lower().endswith('.pck')]
+    i, target = pcks[len(pcks) // 2]
+    xml = os.path.join(files, *(os.path.splitext(target)[0] + '.xml').split('/'))
+    os.makedirs(os.path.dirname(xml), exist_ok=True)
+    open(xml, 'wb').write(b'<replaced/>\n')
+    n = len(catx.read_index(cat))
+    d.run('pack', cat, files, '-', 2, os.path.relpath(xml, files))
+    idx = catx.read_index(cat)
+    check(len(idx) == n and idx[i][0] == target and unpck.unpack(catx.read_member(cat, target)) == b'<replaced/>\n',
+          d.arch + ' .xml replaces the .pck in place')
+
+    # a file the catalog already holds unpacked stays unpacked
+    raw = d.with_ini(write_ini(os.path.join(work, 'off.ini'), 0))
+    open(os.path.join(files, 'x', 'loose.xml'), 'wb').write(b'<v1/>')
+    raw.run('pack', cat, files, '-', 2, 'x\\loose.xml')
+    check(catx.read_index(cat)[-1][0] == 'x/loose.xml' and catx.read_member(cat, 'x/loose.xml') == b'<v1/>',
+          d.arch + ' PackOnAdd=0 stores as it is')
+    open(os.path.join(files, 'x', 'loose.xml'), 'wb').write(b'<v2/>')
+    n = len(catx.read_index(cat))
+    d.run('pack', cat, files, '-', 2, 'x\\loose.xml')
+    idx = catx.read_index(cat)
+    check(len(idx) == n and idx[-1][0] == 'x/loose.xml' and catx.read_member(cat, 'x/loose.xml') == b'<v2/>',
+          d.arch + ' an unpacked member is replaced unpacked')
+    check(int(d.run('caps').stdout) == CAPS, d.arch + ' caps with options')
+
+
 def test_catalog_write(d, game, tmp, catx):
     src_cats = [c for c in (os.path.join(game, 'addon', '04.cat'), os.path.join(game, '03.cat')) if os.path.exists(c)]
     files = os.path.join(tmp, 'files')
@@ -572,7 +656,9 @@ def main():
             test_pck_read(d, a.game, tmp, unpck, catx)
             test_pck_write(d, a.game, tmp, unpck, a.quick)
             test_models(d, a.game, tmp, unpck, catx)
-            test_catalog_write(d, a.game, tmp, catx)
+            # byte-exact comparisons with catx.write_catalog: files go in as they are
+            test_catalog_write(d.with_ini(write_ini(os.path.join(tmp, 'raw.ini'), 0)), a.game, tmp, catx)
+            test_pack_on_add(d, a.game, tmp, catx, unpck)
             print('%s done in %.0fs' % (arch, time.time() - t0))
     finally:
         if not a.keep:

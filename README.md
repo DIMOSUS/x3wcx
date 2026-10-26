@@ -38,7 +38,7 @@ when its gzip header stores no file name, as in the game's files, so ordinary `.
 |---|---|---|
 | List, F3, F5, test | yes | yes, one file |
 | New archive (Alt+F5) | yes, `NN.cat` + `NN.dat` | yes, unmasked, like the game's `addon\scripts` |
-| Add | appended to the end of `.dat` in place; `.dat` is not rewritten | — |
+| Add | appended to the end of `.dat` in place; `.dat` is not rewritten; `.xml`/`.txt`/`.dds`/`.bod`/`.bob` are packed (see below) | — |
 | Replace (same path, any case) | the file keeps its place in the index and its name | only a file with the same name (any case, any extension); a foreign file is refused (`E_NOT_SUPPORTED`); mask and key kept |
 | Delete, including folders | yes | no (`E_NOT_SUPPORTED`) |
 | F4 — edit a file inside | yes | yes |
@@ -74,6 +74,26 @@ when its gzip header stores no file name, as in the game's files, so ordinary `.
 - **A catalog without its `.dat`.** If the `.dat` is gone while the index lists files, adding is refused and no empty
   `.dat` is created.
 - **`.pck`** is written through a temp file and a rename.
+
+## Packing on add
+
+The game looks resources up through extension lists in which the packed form comes first: `pck xml`, `pck txt`,
+`pck dds`, `pbb bob pbd bod` (strings in `X3AP.exe`). Within one catalog a packed file wins over an unpacked one of
+the same name. So when you add files to a catalog, the plugin packs them the way the game's own catalogs hold them:
+
+| You add | Stored as |
+|---|---|
+| `.xml`, `.txt`, `.dds` | `.pck` (gzip, unmasked) |
+| `.bod` | `.pbd` |
+| `.bob` | `.pbb` |
+| anything else, `.pck`/`.pbd`/`.pbb` themselves | as it is |
+
+- An added `t\0001-L044.xml` therefore replaces the catalog's `t\0001-L044.pck` in its place.
+- A file the catalog already holds **unpacked** under the very same name (say `t\0001-L044.xml` from another
+  tool) is replaced as it is, unpacked, so a mod's own layout is kept.
+- To turn packing off: **Configuration → Packer plugins → Configure** with `cat` selected (or the "Configure"
+  button in the Pack dialog) answers one Yes/No question; the choice is stored as `PackOnAdd` in section `[x3wcx]`
+  of the ini TC gives its packer plugins.
 
 ## Warning: editing stock catalogs changes the game
 
