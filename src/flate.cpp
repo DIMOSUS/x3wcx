@@ -521,8 +521,8 @@ void deflate_raw(const uint8_t* src, size_t n, std::vector<uint8_t>& out) {
 
 // ---------------------------------------------------------------- gzip
 
-bool gunzip(const uint8_t* src, size_t n, std::vector<uint8_t>& out) {
-    out.clear();
+// One member at src; appends to out, *used gets its length.
+static bool gunzip_member(const uint8_t* src, size_t n, std::vector<uint8_t>& out, size_t* used) {
     if (n < 18 || src[0] != 0x1F || src[1] != 0x8B || src[2] != 8) return false;
     int flg = src[3];
     if (flg & 0xE0) return false;
@@ -541,13 +541,27 @@ bool gunzip(const uint8_t* src, size_t n, std::vector<uint8_t>& out) {
     }
     if (flg & 2) p += 2;
     if (p >= n) return false;
-    size_t used = 0;
-    if (!inflate_raw(src + p, n - p, out, &used)) return false;
-    p += used;
+    size_t start = out.size(), len = 0;
+    if (!inflate_raw(src + p, n - p, out, &len)) return false;
+    p += len;
     if (p + 8 > n) return false;
     uint32_t crc = src[p] | src[p + 1] << 8 | src[p + 2] << 16 | (uint32_t)src[p + 3] << 24;
     uint32_t isize = src[p + 4] | src[p + 5] << 8 | src[p + 6] << 16 | (uint32_t)src[p + 7] << 24;
-    return crc == crc32(0, out.data(), out.size()) && isize == (uint32_t)out.size();
+    *used = p + 8;
+    return crc == crc32(0, out.data() + start, out.size() - start) && isize == (uint32_t)(out.size() - start);
+}
+
+// All members back to back, as Python's gzip.decompress reads them; zero padding after a member is skipped.
+bool gunzip(const uint8_t* src, size_t n, std::vector<uint8_t>& out) {
+    out.clear();
+    size_t p = 0;
+    do {
+        size_t used = 0;
+        if (!gunzip_member(src + p, n - p, out, &used)) return false;
+        p += used;
+        while (p < n && src[p] == 0) p++;
+    } while (p < n);
+    return true;
 }
 
 void gzip(const uint8_t* src, size_t n, uint32_t mtime, std::vector<uint8_t>& out) {

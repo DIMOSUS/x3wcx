@@ -26,8 +26,8 @@ DRIVERS = [('x86', os.path.join(BUILD, 'wcxdrv32.exe'), os.path.join(BUILD, 'x3w
            ('x64', os.path.join(BUILD, 'wcxdrv64.exe'), os.path.join(BUILD, 'x3wcx.wcx64'))]
 XOR33 = bytes(i ^ 0x33 for i in range(256))
 
-E_NOT_SUPPORTED, E_EABORTED, E_TOO_MANY_FILES = 24, 21, 23
-CAPS = 1 | 2 | 4 | 8 | 64
+E_NOT_SUPPORTED, E_EABORTED, E_TOO_MANY_FILES, E_ECREATE = 24, 21, 23, 16
+CAPS = 1 | 2 | 4 | 8 | 64 | 128
 
 failures = []
 
@@ -258,6 +258,38 @@ def test_pck_write(d, game, tmp, unpck, quick):
         new = open(arc, 'rb').read()
         check(new[:2] == b'\x1f\x8b' and gzip.decompress(new) == data, '%s new pck %s (%d -> %d)' % (d.arch, name, len(data), len(new)))
         check(d.hashes(arc, tmp)[0][1] == hashlib.md5(data).hexdigest(), '%s new pck read back %s' % (d.arch, name))
+    # several gzip members back to back: read whole, as unpck does, and kept whole on repack
+    multi = os.path.join(work, 'multi.pck')
+    parts = [b'<a>first</a>\n', b'<b>second</b>\n', b'third' * 1000]
+    open(multi, 'wb').write(b''.join(gzip.compress(x) for x in parts))
+    whole = b''.join(parts)
+    check(unpck.unpack(open(multi, 'rb').read()) == whole, 'reference reads multi-member gzip')
+    check(d.list(multi)[0][2] == len(whole), d.arch + ' multi-member pck size')
+    check(d.hashes(multi, tmp)[0][1] == hashlib.md5(whole).hexdigest(), d.arch + ' multi-member pck contents')
+    ex = os.path.join(tmp, 'pckm_' + d.arch)
+    os.makedirs(ex, exist_ok=True)
+    d.run('extract', multi, ex)
+    d.run('pack', multi, ex, '-', 2, 'multi.xml')
+    check(unpck.unpack(open(multi, 'rb').read()) == whole, d.arch + ' multi-member pck repack keeps all')
+
+    # an existing .pck takes back only its own member (any case, any extension), nothing dropped in by mistake
+    own = os.path.join(work, 'own.pck')
+    open(own, 'wb').write(gzip.compress(b'<own/>'))
+    before = open(own, 'rb').read()
+    open(os.path.join(src, 'other.txt'), 'wb').write(b'not xml at all')
+    p = d.run('pack', own, src, '-', 2, 'other.txt', ok=None)
+    check(p.returncode == E_NOT_SUPPORTED and open(own, 'rb').read() == before, d.arch + ' pck refuses a foreign file (%d)' % p.returncode)
+    open(os.path.join(src, 'OWN.TXT'), 'wb').write(b'<own>2</own>')
+    d.run('pack', own, src, '-', 2, 'OWN.TXT')
+    check(unpck.unpack(open(own, 'rb').read()) == b'<own>2</own>', d.arch + ' pck takes its own name in another case/extension')
+
+    # a member name outside latin1 is fine for a .pck (no path is stored), only catalogs need latin1
+    cyr = os.path.join(work, 'скрипт.pck')
+    open(cyr, 'wb').write(gzip.compress(b'<x/>'))
+    open(os.path.join(src, 'скрипт.xml'), 'wb').write(b'<x>cyr</x>')
+    d.run('pack', cyr, src, '-', 2, 'скрипт.xml')
+    check(unpck.unpack(open(cyr, 'rb').read()) == b'<x>cyr</x>', d.arch + ' pck with a cyrillic name repacks')
+
     p = d.run('pack', os.path.join(work, 'two.pck'), src, '-', 2, 'one.xml', 'zeros.xml', ok=None)
     check(p.returncode == E_TOO_MANY_FILES, d.arch + ' pck with two files refused')
     p = d.run('delete', os.path.join(work, 'new_one.pck'), 'new_one.xml', ok=None)
@@ -360,6 +392,29 @@ def test_catalog_write(d, game, tmp, catx):
     d.run('pack', cat, files, '-', 2, 'scripts\\plugin.test.one.xml', 'sub\\deep\\blob.bin')
     expect_catalog(cat, [('scripts/plugin.test.one.xml', new['scripts/plugin.test.one.xml']), ('sub/deep/blob.bin', new['sub/deep/blob.bin'])],
                    '06.dat', tmp, catx, d.arch + ' new catalog', whole=True)
+    # catalog paths are latin1: a cyrillic name is refused and nothing changes
+    open(os.path.join(files, 'файл.txt'), 'wb').write(b'x')
+    before = open(cat, 'rb').read()
+    p = d.run('pack', cat, files, '-', 2, 'файл.txt', ok=None)
+    check(p.returncode == 12 and open(cat, 'rb').read() == before, d.arch + ' non-latin1 path refused (%d)' % p.returncode)
+
+    # a catalog with members but no .dat: refused, and no empty .dat left behind
+    shutil.copyfile(cat, os.path.join(work, '09.cat'))
+    p = d.run('pack', os.path.join(work, '09.cat'), files, '-', 2, 'readme with spaces.txt', ok=None)
+    check(p.returncode != 0 and not os.path.exists(os.path.join(work, '09.dat')), d.arch + ' no .dat: refused without creating one')
+
+    # a *.x3wcx-bak left by a cut-short swap blocks every write until it is sorted out
+    for bak in ('06.dat.x3wcx-bak', '06.cat.x3wcx-bak'):
+        open(os.path.join(work, bak), 'wb').write(b'old copy')
+        before = (open(cat, 'rb').read(), open(os.path.join(work, '06.dat'), 'rb').read())
+        for args in (('pack', cat, files, '-', 2, 'readme with spaces.txt'), ('delete', cat, 'sub\\deep\\blob.bin'),
+                     ('pack', cat, files, '-', 2, 'scripts\\plugin.test.one.xml')):
+            p = d.run(*args, ok=None)
+            check(p.returncode == E_ECREATE, '%s %s refused while %s exists (%d)' % (d.arch, args[0], bak, p.returncode))
+        check((open(cat, 'rb').read(), open(os.path.join(work, '06.dat'), 'rb').read()) == before, d.arch + ' catalog untouched with ' + bak)
+        check(open(os.path.join(work, bak), 'rb').read() == b'old copy', d.arch + ' backup kept: ' + bak)
+        os.remove(os.path.join(work, bak))
+
     lone = os.path.join(work, '08.dat')
     open(lone, 'wb').write(b'not ours')
     p = d.run('pack', os.path.join(work, '08.cat'), files, '-', 2, 'readme with spaces.txt', ok=None)

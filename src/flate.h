@@ -13,7 +13,7 @@ bool inflate_raw(const uint8_t* src, size_t n, std::vector<uint8_t>& out, size_t
 // Raw deflate stream of src (LZ77 with hash chains and lazy matching, dynamic/fixed/stored blocks).
 void deflate_raw(const uint8_t* src, size_t n, std::vector<uint8_t>& out);
 
-// One gzip member; checks CRC32 and ISIZE.
+// gzip members back to back (as Python's gzip.decompress), each checked by CRC32 and ISIZE.
 bool gunzip(const uint8_t* src, size_t n, std::vector<uint8_t>& out);
 // gzip member with the header the game's .pck files have: no name, xfl 2, OS 0x0b (NTFS).
 void gzip(const uint8_t* src, size_t n, uint32_t mtime, std::vector<uint8_t>& out);

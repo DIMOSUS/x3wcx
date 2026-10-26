@@ -625,8 +625,9 @@ int rewrite_cat(const wstr& cat, const Catalog& old, const std::vector<Item>& it
 int append_cat(const wstr& cat, const Catalog& old, const std::vector<Item>& items) {
     wstr dat = dat_of(cat);
     uint64_t end = old.total();
-    File f(CreateFileW(dat.c_str(), GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ, nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL,
-                       nullptr));
+    // only an empty catalog may be missing its .dat; otherwise do not leave a stray empty one behind
+    File f(CreateFileW(dat.c_str(), GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ, nullptr, old.ents.empty() ? OPEN_ALWAYS : OPEN_EXISTING,
+                       FILE_ATTRIBUTE_NORMAL, nullptr));
     if (!f.ok()) return E_EOPEN;
     uint64_t size;
     if (!file_size(f.h, size)) return E_EREAD;
@@ -642,8 +643,8 @@ int append_cat(const wstr& cat, const Catalog& old, const std::vector<Item>& ite
 }
 
 struct Source {
-    wstr src;          // file on disk
-    std::string path;  // path inside the archive
+    wstr src;   // file on disk
+    wstr path;  // path inside the archive, forward slashes
 };
 
 wstr join(const wstr& dir, const wstr& name) {
@@ -660,14 +661,20 @@ int collect_sources(const wstr& subPath, const wstr& srcPath, const std::vector<
         if (!subPath.empty()) inArc = join(subPath, inArc);
         std::replace(inArc.begin(), inArc.end(), L'\\', L'/');
         while (!inArc.empty() && inArc[0] == L'/') inArc.erase(0, 1);
-        std::string p;
-        if (!w_to_latin1(inArc, p) || p.empty()) return E_BAD_DATA;
-        out.push_back({join(srcPath, name), p});
+        if (inArc.empty()) return E_BAD_DATA;
+        out.push_back({join(srcPath, name), inArc});
     }
     return 0;
 }
 
+// *.x3wcx-bak next to the catalog means a swap was cut short (crash between the two renames): the backup may be
+// the only whole copy, so nothing is written until the user sorts it out.
+bool interrupted_swap(const wstr& cat) {
+    return exists(cat + kBakSuffix) || exists(dat_of(cat) + kBakSuffix);
+}
+
 int pack_cat(const wstr& cat, const std::vector<Source>& srcs) {
+    if (interrupted_swap(cat)) return E_ECREATE;
     Catalog old;
     bool fresh = !exists(cat);
     if (!fresh) {
@@ -685,13 +692,16 @@ int pack_cat(const wstr& cat, const std::vector<Source>& srcs) {
         int r = load_cat(cat, old);
         if (r) return r;
     }
+    std::vector<std::string> paths(srcs.size());  // catalog paths are latin1
+    for (size_t i = 0; i < srcs.size(); i++)
+        if (!w_to_latin1(srcs[i].path, paths[i])) return E_BAD_DATA;
     // the last of equal paths wins; a path already in the catalog is replaced in its place
     std::vector<int> replaceBy(old.ents.size(), -1);
     std::vector<bool> isNew(srcs.size(), true);
     for (size_t i = 0; i < srcs.size(); i++) {
-        std::string n = norm(srcs[i].path);
+        std::string n = norm(paths[i]);
         for (size_t j = i + 1; j < srcs.size(); j++)
-            if (norm(srcs[j].path) == n) isNew[i] = false;
+            if (norm(paths[j]) == n) isNew[i] = false;
         if (!isNew[i]) continue;
         for (size_t k = 0; k < old.ents.size(); k++)
             if (norm(old.ents[k].path) == n) {
@@ -702,7 +712,7 @@ int pack_cat(const wstr& cat, const std::vector<Source>& srcs) {
     bool replacing = std::any_of(replaceBy.begin(), replaceBy.end(), [](int x) { return x >= 0; });
     std::vector<Item> added;
     for (size_t i = 0; i < srcs.size(); i++)
-        if (isNew[i]) added.push_back({srcs[i].path, 0, 0, srcs[i].src});
+        if (isNew[i]) added.push_back({paths[i], 0, 0, srcs[i].src});
     if (!replacing) return added.empty() ? 0 : append_cat(cat, old, added);
     std::vector<Item> items;
     for (size_t k = 0; k < old.ents.size(); k++) {
@@ -731,6 +741,7 @@ bool matches(const std::string& path, const wstr& pattern) {
 }
 
 int delete_cat(const wstr& cat, const std::vector<wstr>& list) {
+    if (interrupted_swap(cat)) return E_ECREATE;
     Catalog old;
     int r = load_cat(cat, old);
     if (r) return r;
@@ -770,6 +781,8 @@ int pack_pck(const wstr& pck, const std::vector<Source>& srcs) {
         int r = read_all(pck, raw);
         if (r) return r;
         if (!raw.empty() && !decode_pck(raw, p)) return E_BAD_ARCHIVE;
+        // an existing .pck takes only its own member back (any extension, any case), not a file dropped in by mistake
+        if (!raw.empty() && lower_w(base_name(strip_ext(srcs[0].path))) != lower_w(base_name(strip_ext(pck)))) return E_NOT_SUPPORTED;
     }
     std::vector<uint8_t> data;
     int r = read_all(srcs[0].src, data);
@@ -914,7 +927,7 @@ void __stdcall SetProcessDataProcW(HANDLE, tProcessDataProcW p) {
 }
 
 int __stdcall GetPackerCaps() {
-    return PK_CAPS_NEW | PK_CAPS_MODIFY | PK_CAPS_MULTIPLE | PK_CAPS_DELETE | PK_CAPS_BY_CONTENT;
+    return PK_CAPS_NEW | PK_CAPS_MODIFY | PK_CAPS_MULTIPLE | PK_CAPS_DELETE | PK_CAPS_BY_CONTENT | PK_CAPS_SEARCHTEXT;
 }
 
 int __stdcall PackFilesW(WCHAR* packedFile, WCHAR* subPath, WCHAR* srcPath, WCHAR* addList, int flags) {

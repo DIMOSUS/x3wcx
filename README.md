@@ -22,7 +22,8 @@ needed: deflate/inflate are built in (`src/flate.cpp`).
 3. If the extension is already taken by another plugin, TC asks which one to use. Do not bind `.dat`.
 
 An archive with another extension opens with Ctrl+PgDn. The plugin recognizes a catalog by the first index line
-(`*.dat` once decrypted) and a `.pck` by the gzip signature, masked or not.
+(`*.dat` once decrypted) and a `.pck` by the gzip signature, masked or not. By content, a `.pck` is recognized only
+when its gzip header stores no file name, as in the game's files, so ordinary `.gz` files from gzip are left alone.
 
 ## Features
 
@@ -31,7 +32,7 @@ An archive with another extension opens with Ctrl+PgDn. The plugin recognizes a 
 | List, F3, F5, test | yes | yes, one file |
 | New archive (Alt+F5) | yes, `NN.cat` + `NN.dat` | yes, unmasked, like the game's `addon\scripts` |
 | Add | appended to the end of `.dat` in place; `.dat` is not rewritten | — |
-| Replace (same path, any case) | the file keeps its place in the index and its name | recompressed; mask and key kept |
+| Replace (same path, any case) | the file keeps its place in the index and its name | only a file with the same name (any case, any extension); a foreign file is refused (`E_NOT_SUPPORTED`); mask and key kept |
 | Delete, including folders | yes | no (`E_NOT_SUPPORTED`) |
 | F4 — edit a file inside | yes | yes |
 
@@ -44,6 +45,8 @@ An archive with another extension opens with Ctrl+PgDn. The plugin recognizes a 
   This matters for a `.pck` opened from inside a catalog: TC unpacks it to a temp folder, and the original folder name
   is lost.
 - **Progress and Cancel** work for unpacking and writing. Cancel leaves the catalog as it was.
+- **Text search** (Alt+F7, "search archives") looks inside catalogs and `.pck` files.
+- **A `.pck` made of several gzip members** is read whole, as `unpck.py` does, and written back as one member.
 
 ## How writes stay safe
 
@@ -54,8 +57,12 @@ An archive with another extension opens with Ctrl+PgDn. The plugin recognizes a 
 - **Replacing or deleting in the middle** writes a new `.dat` and `.cat` next to the old ones (`*.x3wcx-tmp`), then
   swaps the pair by renames. Meanwhile the old pair is kept as `*.x3wcx-bak` and removed after success; on error it is
   put back. If Windows crashes exactly between the two renames, restore both files from `*.x3wcx-bak` by hand.
+  While a `*.x3wcx-bak` lies next to a catalog, the plugin refuses to change it (`E_ECREATE`), so as not to overwrite
+  what may be the only whole copy: restore the pair or remove the extra files first.
 - **Disk space.** Such a rewrite needs free space the size of the `.dat`. For the stock `01.dat` (1.3 GB) and `02.dat`
   (2.1 GB) it is slow and needs that space.
+- **A catalog without its `.dat`.** If the `.dat` is gone while the index lists files, adding is refused and no empty
+  `.dat` is created.
 - **`.pck`** is written through a temp file and a rename.
 
 ## Warning: editing stock catalogs changes the game
