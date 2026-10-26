@@ -411,19 +411,32 @@ bool packed_ext(const wstr& path) {
     return ends_with_i(path, L".pck") || ends_with_i(path, L".pbd") || ends_with_i(path, L".pbb");
 }
 
-// Name of the single member: the base name with .bod for .pbd, .bob for .pbb; for .pck an extension guessed from
-// its folder, else from the text.
+// Extension for what a .pck holds, by content: the folder is no guide (dds/ holds textures, director/mdfiles is a
+// plain list, types/hq is XML) and is lost anyway when TC opens a .pck from inside a catalog via a temp copy.
+const wchar_t* content_ext(const std::vector<uint8_t>& d) {
+    auto starts = [&](const char* sig, size_t n) { return d.size() >= n && memcmp(d.data(), sig, n) == 0; };
+    if (starts("DDS ", 4)) return L".dds";
+    if (starts("\x89PNG\r\n\x1a\n", 8)) return L".png";
+    if (starts("\xFF\xD8\xFF", 3)) return L".jpg";
+    if (starts("BOB1", 4) || starts("CUT1", 4)) return L".bob";
+    if (starts("OggS", 4)) return L".ogg";
+    if (starts("RIFF", 4) && d.size() >= 12 && memcmp(d.data() + 8, "WAVE", 4) == 0) return L".wav";
+    size_t i = starts("\xEF\xBB\xBF", 3) ? 3 : 0;
+    while (i < d.size() && (d[i] == ' ' || d[i] == '\t' || d[i] == '\r' || d[i] == '\n')) i++;
+    if (i == d.size()) return nullptr;  // empty: no clue
+    if (d[i] == '<') return L".xml";
+    size_t n = std::min<size_t>(d.size(), 4096);
+    return memchr(d.data(), 0, n) ? L".bin" : L".txt";
+}
+
+// Name of the single member: the base name with .bod for .pbd, .bob for .pbb; for .pck an extension from the
+// content, and for an empty one from the folder (types -> .txt, else .xml).
 wstr pck_member_name(const wstr& pckPath, const std::vector<uint8_t>& data) {
-    wstr folder = lower_w(base_name(dir_name(pckPath)));
     wstr stem = base_name(strip_ext(pckPath));
     if (ends_with_i(pckPath, L".pbd")) return stem + L".bod";
     if (ends_with_i(pckPath, L".pbb")) return stem + L".bob";
-    if (folder == L"scripts" || folder == L"t" || folder == L"director" || folder == L"maps") return stem + L".xml";
-    if (folder == L"types") return stem + L".txt";
-    size_t i = 0;
-    if (data.size() >= 3 && data[0] == 0xEF && data[1] == 0xBB && data[2] == 0xBF) i = 3;
-    while (i < data.size() && (data[i] == ' ' || data[i] == '\t' || data[i] == '\r' || data[i] == '\n')) i++;
-    return stem + (i == data.size() || data[i] == '<' ? L".xml" : L".txt");
+    if (const wchar_t* ext = content_ext(data)) return stem + ext;
+    return stem + (lower_w(base_name(dir_name(pckPath))) == L"types" ? L".txt" : L".xml");
 }
 
 // ---------------------------------------------------------------- archive kinds

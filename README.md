@@ -8,7 +8,7 @@ A packer plugin (WCX) for Total Commander. It opens these as ordinary archives:
 
 - **X3 catalogs** (X2, X3: Reunion, Terran Conflict, Albion Prelude): an index `NN.cat` and its paired data file
   `NN.dat`;
-- **`.pck` files** (gzip-compressed XML and TXT): an archive with one file inside;
+- **`.pck` files** (gzip-compressed XML, TXT and DDS textures): an archive with one file inside;
 - **`.pbd` and `.pbb` models**, packed the same way: inside is the text model `.bod` or the binary model `.bob`.
 
 You can view (F3), unpack (F5), edit (F4), add, replace and delete files right in TC. No external libraries are
@@ -49,10 +49,11 @@ when its gzip header stores no file name, as in the game's files, so ordinary `.
   catalog it names the paired `.dat`. A new catalog is byte-identical to what `x3kc cat --pack` writes.
 - **The file inside a `.pbd` is a `.bod`, inside a `.pbb` a `.bob`** (the archive's base name with that
   extension). A `.bod` is text and can be edited with F4; a `.bob` is binary and needs a model tool.
-- **The extension of the file inside a `.pck`** comes from its folder: `scripts`, `t`, `director`, `maps` → `.xml`,
-  `types` → `.txt`. In any other folder it comes from the content: `.xml` if the text starts with `<`, else `.txt`.
-  This matters for a `.pck` opened from inside a catalog: TC unpacks it to a temp folder, and the original folder name
-  is lost.
+- **The extension of the file inside a `.pck`** comes from its content: `DDS ` → `.dds` (the textures in `dds\`),
+  also `.png`, `.jpg`, `.bob`, `.ogg`, `.wav` by their signatures; text starting with `<` → `.xml`; other text →
+  `.txt`; other binary data → `.bin`. Only an empty file falls back to its folder (`types` → `.txt`, else `.xml`).
+  The folder is no guide (`director\mdfiles.pck` is a plain list, `types\hq.pck` is XML), and TC loses it anyway
+  when it opens a `.pck` from inside a catalog through a temp copy.
 - **Progress and Cancel** work for unpacking and writing. Cancel leaves the catalog as it was.
 - **Text search** (Alt+F7, "search archives") looks inside catalogs and `.pck` files.
 - **A `.pck` made of several gzip members** is read whole, as `unpck.py` does, and written back as one member.

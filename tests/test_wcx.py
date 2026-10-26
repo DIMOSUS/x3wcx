@@ -10,6 +10,7 @@ a temporary folder. Without --game the tests run on small synthetic catalogs mad
         --quick   skip catalogs whose .dat is over 500 MB (the game's 01 and 02) and pack only part of the .pck files
 """
 import argparse
+import collections
 import glob
 import gzip
 import hashlib
@@ -162,28 +163,49 @@ def test_pck_read(d, game, tmp, unpck, catx):
         data = unpck.unpack(open(p, 'rb').read())
         check(d.hashes(p, tmp) == [(os.path.splitext(os.path.basename(p))[0] + '.xml', hashlib.md5(data).hexdigest())],
               '%s pck contents %s' % (d.arch, os.path.basename(p)))
-    # extension by folder, then by content
-    src = os.path.join(game, 'addon', '04.cat')
-    if not os.path.exists(src):
-        return
-    for p, _, _ in catx.read_index(src):
-        if not p.lower().endswith('.pck'):
-            continue
-        folder = p.split('/')[0].lower()
-        data = unpck.unpack(catx.read_member(src, p))
-        for where in (folder, 'unknown'):
-            dst = os.path.join(tmp, 'pckext', where, os.path.basename(p))
-            os.makedirs(os.path.dirname(dst), exist_ok=True)
-            open(dst, 'wb').write(catx.read_member(src, p))
-            if where in ('scripts', 't', 'director', 'maps'):
-                ext = '.xml'
-            elif where == 'types':
-                ext = '.txt'
-            else:
-                ext = '.xml' if data.lstrip(b'\xef\xbb\xbf \t\r\n')[:1] in (b'<', b'') else '.txt'
-            got = d.list(dst)
-            check(got[0][0] == os.path.splitext(os.path.basename(p))[0] + ext and got[0][2] == len(data),
-                  '%s pck name %s in %s: %s' % (d.arch, p, where, got[0][0]))
+    # extension of the member by content (DDS textures in dds/, a plain list in director/, XML in types/ ...);
+    # samples of every top folder of every catalog, each also under an unrelated folder (as in TC's temp copy)
+    cats = sorted(glob.glob(os.path.join(game, '[0-9][0-9].cat'))) + sorted(glob.glob(os.path.join(game, 'addon', '[0-9][0-9].cat')))
+    per_top = collections.Counter()
+    kinds = collections.Counter()
+    for cat in cats:
+        for p, _, _ in catx.read_index(cat):
+            if not p.lower().endswith('.pck'):
+                continue
+            top = p.split('/')[0].lower()
+            special = os.path.basename(p).lower() in ('mdfiles.pck', 'hq.pck')
+            if per_top[top] >= 4 and not special:
+                continue
+            per_top[top] += 1
+            raw = catx.read_member(cat, p)
+            data = unpck.unpack(raw)
+            folder = p.split('/')[-2].lower() if '/' in p else ''
+            for where in (folder or 'root', 'unknown'):
+                dst = os.path.join(tmp, 'pckext', where, os.path.basename(p))
+                os.makedirs(os.path.dirname(dst), exist_ok=True)
+                open(dst, 'wb').write(raw)
+                ext = expected_pck_ext(data, where)
+                kinds[ext] += 1
+                got = d.list(dst)
+                check(got[0][0] == os.path.splitext(os.path.basename(p))[0] + ext and got[0][2] == len(data),
+                      '%s pck name %s in %s: %s, want %s' % (d.arch, p, where, got[0][0], ext))
+    print('  %s pck member names: %s' % (d.arch, dict(kinds)))
+
+
+def expected_pck_ext(data, folder):
+    """The member extension the plugin should give a .pck holding data (an independent spelling of its rule)."""
+    for sig, ext in ((b'DDS ', '.dds'), (b'\x89PNG\r\n\x1a\n', '.png'), (b'\xff\xd8\xff', '.jpg'), (b'BOB1', '.bob'),
+                     (b'CUT1', '.bob'), (b'OggS', '.ogg')):
+        if data.startswith(sig):
+            return ext
+    if data[:4] == b'RIFF' and data[8:12] == b'WAVE':
+        return '.wav'
+    text = (data[3:] if data.startswith(b'\xef\xbb\xbf') else data).lstrip(b' \t\r\n')
+    if not text:
+        return '.txt' if folder == 'types' else '.xml'
+    if text[:1] == b'<':
+        return '.xml'
+    return '.bin' if b'\x00' in data[:4096] else '.txt'
 
 
 def test_pck_write(d, game, tmp, unpck, quick):
@@ -492,6 +514,13 @@ def make_synthetic_game(root, catx):
         m = [('scripts/!lib.s%d.pck' % i, gzip.compress(xml(i))) for i in range(n)]
         m += [('t/%04d-L044.pck' % (i + n), gzip.compress(xml(i + n))) for i in range(3)]
         m += [('types/TShips.pck', gzip.compress(b'22;0;\n' * 500)), ('maps/x3_universe.pck', gzip.compress(xml(99)))]
+        # what .pck hold besides XML: textures, a plain list in director/, XML in types/, empty files, odd binaries
+        m += [('dds/-%d.pck' % n, gzip.compress(b'DDS |\x00\x00\x00' + blob(4000))),
+              ('director/mdfiles.pck', gzip.compress(b'0.1 Assassinate 1\r\n0.13 Follow Ship\r\n')),
+              ('types/hq.pck', gzip.compress(b'<?xml version="1.0" encoding="iso-8859-1"?>\n<hq/>\n')),
+              ('types/empty.pck', gzip.compress(b'')), ('t/empty.pck', gzip.compress(b'')),
+              ('loadscr/logo.pck', gzip.compress(b'\xff\xd8\xff\xe0' + blob(3000))),
+              ('misc/data.pck', gzip.compress(b'ab\x00cd' + blob(500)))]
         m += [('director/2.024 Terran Plot.pck', gzip.compress(xml(98))), ('L/x3story.obj', blob(30000)),
               ('objects/cut/00749 big model.pbd', gzip.compress(b'/=====\n// x3wcx test model\n' + b'1; 2; 3; -1; // point\n' * 3000)),
               ('objects/cut/00948.pbb', gzip.compress(b'CUT1INFO$' + blob(60000))),
