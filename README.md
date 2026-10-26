@@ -46,7 +46,8 @@ when its gzip header stores no file name, as in the game's files, so ordinary `.
 - **Paths inside a catalog** are stored with forward slashes in latin1, as the game does. A name with characters
   outside latin1 is refused (`E_BAD_DATA`).
 - **The first index line** (a `.dat` name the game does not use) is kept as it was when a catalog is changed. In a new
-  catalog it names the paired `.dat`. A new catalog is byte-identical to what `x3kc cat --pack` writes.
+  catalog it names the paired `.dat`. With packing on add off (or for files it does not pack), a new
+  catalog is byte-identical to what `x3kc cat --pack` writes.
 - **The file inside a `.pbd` is a `.bod`, inside a `.pbb` a `.bob`** (the archive's base name with that
   extension). A `.bod` is text and can be edited with F4; a `.bob` is binary and needs a model tool.
 - **The extension of the file inside a `.pck`** comes from its content: `DDS ` → `.dds` (the textures in `dds\`),
